@@ -6,42 +6,72 @@ import { useEmployees } from "./hooks/useEmployees"
 import { usePaginatedTransactions } from "./hooks/usePaginatedTransactions"
 import { useTransactionsByEmployee } from "./hooks/useTransactionsByEmployee"
 import { EMPTY_EMPLOYEE } from "./utils/constants"
-import { Employee } from "./utils/types"
+import { Employee, Transaction } from "./utils/types"
 
 export function App() {
-  const { data: employees, ...employeeUtils } = useEmployees()
-  const { data: paginatedTransactions, ...paginatedTransactionsUtils } = usePaginatedTransactions()
-  const { data: transactionsByEmployee, ...transactionsByEmployeeUtils } = useTransactionsByEmployee()
-  const [isLoading, setIsLoading] = useState(false)
+  const { data: employees, loading: employeesLoading, fetchAll: fetchEmployees } = useEmployees()
+  const {
+    data: paginatedTransactions,
+    loading: transactionsLoading,
+    fetchAll: fetchTransactions,
+    invalidateData: invalidatePaginatedData,
+  } = usePaginatedTransactions()
+  const {
+    data: transactionsByEmployee,
+    fetchById: fetchTransactionsByEmployee,
+    invalidateData: invalidateEmployeeData,
+    loading: employeeTransactionsLoading,
+  } = useTransactionsByEmployee()
 
-  const transactions = useMemo(
-    () => paginatedTransactions?.data ?? transactionsByEmployee ?? null,
-    [paginatedTransactions, transactionsByEmployee]
-  )
+  // Global state to maintain the approval status of transactions
+  const [approvalStatus, setApprovalStatus] = useState<{ [key: string]: boolean }>({})
+
+  // Combine transactions with persisted approval status
+  const transactions = useMemo(() => {
+    const allTransactions = paginatedTransactions?.data ?? transactionsByEmployee ?? null
+    if (!allTransactions) return null
+
+    return allTransactions.map((transaction) => ({
+      ...transaction,
+      approved: approvalStatus[transaction.id] ?? transaction.approved,
+    }))
+  }, [paginatedTransactions, transactionsByEmployee, approvalStatus])
+
+  const isEmployeeFiltered = transactionsByEmployee !== null
+  const hasMorePages = paginatedTransactions?.nextPage !== null
+  const isInitialLoading = transactions === null && transactionsLoading
 
   const loadAllTransactions = useCallback(async () => {
-    setIsLoading(true)
-    transactionsByEmployeeUtils.invalidateData()
-
-    await employeeUtils.fetchAll()
-    await paginatedTransactionsUtils.fetchAll()
-
-    setIsLoading(false)
-  }, [employeeUtils, paginatedTransactionsUtils, transactionsByEmployeeUtils])
+    invalidateEmployeeData()
+    await fetchEmployees()
+    await fetchTransactions()
+  }, [fetchEmployees, fetchTransactions, invalidateEmployeeData])
 
   const loadTransactionsByEmployee = useCallback(
     async (employeeId: string) => {
-      paginatedTransactionsUtils.invalidateData()
-      await transactionsByEmployeeUtils.fetchById(employeeId)
+      invalidatePaginatedData()
+      await fetchTransactionsByEmployee(employeeId)
     },
-    [paginatedTransactionsUtils, transactionsByEmployeeUtils]
+    [invalidatePaginatedData, fetchTransactionsByEmployee]
   )
 
   useEffect(() => {
-    if (employees === null && !employeeUtils.loading) {
-      loadAllTransactions()
+    if (employees === null && !employeesLoading) {
+      fetchEmployees()
+      fetchTransactions()
     }
-  }, [employeeUtils.loading, employees, loadAllTransactions])
+  }, [employeesLoading, employees, fetchEmployees, fetchTransactions])
+
+  // Function to handle transaction approval changes
+  const setTransactionApproval = useCallback(
+    async ({ transactionId, newValue }: { transactionId: string; newValue: boolean }) => {
+      setApprovalStatus((prev) => ({
+        ...prev,
+        [transactionId]: newValue,
+      }))
+    },
+    []
+  )
 
   return (
     <Fragment>
@@ -51,7 +81,7 @@ export function App() {
         <hr className="RampBreak--l" />
 
         <InputSelect<Employee>
-          isLoading={isLoading}
+          isLoading={employeesLoading}
           defaultValue={EMPTY_EMPLOYEE}
           items={employees === null ? [] : [EMPTY_EMPLOYEE, ...employees]}
           label="Filter by employee"
@@ -61,25 +91,31 @@ export function App() {
             label: `${item.firstName} ${item.lastName}`,
           })}
           onChange={async (newValue) => {
-            if (newValue === null) {
-              return
-            }
+            if (newValue === null) return
 
-            await loadTransactionsByEmployee(newValue.id)
+            if (newValue.id === EMPTY_EMPLOYEE.id) {
+              await loadAllTransactions()
+            } else {
+              await loadTransactionsByEmployee(newValue.id)
+            }
           }}
         />
 
         <div className="RampBreak--l" />
 
         <div className="RampGrid">
-          <Transactions transactions={transactions} />
+          {transactions !== null ? (
+            <Transactions transactions={transactions} setTransactionApproval={setTransactionApproval} />
+          ) : (
+            <p>Loading transactions...</p>
+          )}
 
-          {transactions !== null && (
+          {!isInitialLoading && !employeeTransactionsLoading && !isEmployeeFiltered && hasMorePages && (
             <button
               className="RampButton"
-              disabled={paginatedTransactionsUtils.loading}
+              disabled={transactionsLoading}
               onClick={async () => {
-                await loadAllTransactions()
+                await fetchTransactions()
               }}
             >
               View More
